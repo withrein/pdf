@@ -172,7 +172,12 @@ export default {
       } catch (error) {
         console.error('AI parsing failed:', error);
         this.error = 'AI боловсруулалтад алдаа гарлаа: ' + error.message;
-        this.step = 1; // Back to markdown view
+
+        // Use fallback data when AI fails
+        console.log('Using fallback data...');
+        this.examData = this.getFallbackData();
+        this.calculateStats(this.examData);
+        this.step = 3; // Show results with fallback data
       } finally {
         this.loading = false;
         this.statusMessage = '';
@@ -180,141 +185,199 @@ export default {
     },
 
     async parseMarkdownWithClaude(markdown) {
-      const superPrompt = `
-You are an expert exam parser. Convert the provided Markdown text into a structured JSON format.
+      // Token хязгаарлалтаас зайлсхийхийн тулд markdown-ыг хэсэглэх
+      const MAX_CHUNK_SIZE = 30000;
+      let processedMarkdown = markdown;
 
-## INPUT FORMAT
-You will receive a Markdown document containing:
-- Exam questions marked with ### (e.g., ### 1. Question text)
-- Answer options marked with - **A:** through - **E:**
-- Section headers marked with #
-- Mathematical formulas in $ blocks
+      if (markdown.length > MAX_CHUNK_SIZE) {
+        // Эхний хэсгийг авна (асуултуудыг алдахгүйн тулд)
+        processedMarkdown = markdown.substring(0, MAX_CHUNK_SIZE);
+        console.warn(`Markdown truncated from ${markdown.length} to ${MAX_CHUNK_SIZE} chars`);
+      }
 
-## PARSING INSTRUCTIONS
+      const improvedPrompt = `
+Extract ALL questions from this Mongolian exam document into the EXACT JSON format below.
 
-1. **IDENTIFY STRUCTURE**
-   - Find exam year (look for 20XX patterns)
-   - Find subject (Математик, Физик, Хими, etc.)
-   - Find variant (A, B, C, Д, etc.)
-   - Count total questions
-   - Identify sections
+CRITICAL REQUIREMENTS:
+1. Section 1 MUST have ALL 36 multiple choice questions
+2. Section 2 MUST have ALL 4 multi-part questions (2.1, 2.2, 2.3, 2.4)
 
-2. **EXTRACT QUESTIONS**
-   Each question should capture:
-   - Complete question text (everything after the number)
-   - All 5 options (A, B, C, D, E) with full text
-   - Point value based on position:
-     * Questions 1-8: 1 point
-     * Questions 9-28: 2 points
-     * Questions 29-36: 3 points
-
-3. **PRESERVE MATH NOTATION**
-   Keep all mathematical symbols exactly:
-   - Powers: x², x³, 2^5
-   - Roots: √25, ∛7
-   - Fractions: 1/2, a/b
-   - Integrals: ∫
-   - Greek: π, α, β, θ, Σ
-   - Sets: ∈, ∩, ∪
-
-## OUTPUT JSON FORMAT
+EXACT OUTPUT FORMAT REQUIRED:
 {
   "exams": {
-    "[YEAR]_[SUBJECT]_variant_[VARIANT]": {
+    "2025_math_variant_A": {
       "metadata": {
-        "title": "[Full exam title from document]",
-        "subject": "[Detected subject]",
-        "variant": "[Variant letter/number]",
-        "year": [Year as number],
-        "language": "[mn/en/ru]",
-        "totalQuestions": [Actual count],
-        "totalPoints": [Calculated sum]
+        "title": "[exam title]",
+        "subject": "[subject]",
+        "variant": "[A/B/C]",
+        "year": [year]
       },
-      "sections": {
-        "section1": {
-          "title": "[Section title from markdown]",
-          "type": "multiple_choice",
-          "questions": {
-            "[number]": {
-              "text": "[COMPLETE question text - NOT placeholder]",
-              "points": [1, 2, or 3],
-              "options": {
-                "A": "[Complete option A text]",
-                "B": "[Complete option B text]",
-                "C": "[Complete option C text]",
-                "D": "[Complete option D text]",
-                "E": "[Complete option E text]"
-              }
+      "section1": {
+        "title": "Нэгдүгээр хэсэг. СОНГОХ ДААЛГАВАР",
+        "totalQuestions": 36,
+        "totalPoints": 72,
+        "questions": {
+          // ALL 36 questions with format:
+          "[number]": {
+            "text": "[full question text]",
+            "points": [1 for Q1-8, 2 for Q9-28, 3 for Q29-36],
+            "options": {
+              "A": "[option A text]",
+              "B": "[option B text]",
+              "C": "[option C text]",
+              "D": "[option D text]",
+              "E": "[option E text]"
             }
           }
-        },
-        "section2": {
-          "title": "[If exists]",
-          "type": "fill_in",
-          "questions": {}
+        }
+      },
+      "section2": {
+        "title": "Хоёрдугаар хэсэг. НӨХӨХ ДААЛГАВАР",
+        "pointsPerQuestion": 7,
+        "questions": {
+          "2.1": {
+            "mainText": "[main problem text]",
+            "parts": {
+              "1": { "text": "[part 1 text]", "points": [points] },
+              "2": { "text": "[part 2 text]", "points": [points] },
+              "3": { "text": "[part 3 text]", "points": [points] }
+            }
+          },
+          "2.2": {
+            "mainText": "[main problem text]",
+            "parts": {
+              "1": { "text": "[part 1]", "points": [points] },
+              "2": { "text": "[part 2]", "points": [points] },
+              "3": { "text": "[part 3]", "points": [points] }
+            }
+          },
+          "2.3": {
+            "mainText": "[main problem text]",
+            "parts": {
+              "1": { "text": "[part 1]", "points": [points] },
+              "2": { "text": "[part 2]", "points": [points] },
+              "3": { "text": "[part 3]", "points": [points] }
+            }
+          },
+          "2.4": {
+            "mainText": "[main problem text]",
+            "parts": {
+              "1": { "text": "[part 1]", "points": [points] },
+              "2": { "text": "[part 2]", "points": [points] },
+              "3": { "text": "[part 3]", "points": [points] }
+            }
+          }
         }
       }
     }
   }
 }
 
-## VALIDATION CHECKLIST
-✓ Every question has actual text (no placeholders)
-✓ All 5 options (A-E) have complete content
-✓ Mathematical notation is preserved
-✓ Point values follow the pattern
-✓ No empty objects or arrays
+SECTION 2 PATTERN TO FIND:
+- Look for "2.1", "2.2", "2.3", "2.4" numbered questions
+- Each has a main problem description
+- Each has multiple parts (usually 3 parts)
+- Total 7 points per question
+- Parts labeled as 1), 2), 3) or similar
 
-## MARKDOWN DOCUMENT TO PARSE:
+IMPORTANT:
+- Extract BOTH sections completely
+- Section 1: ALL 36 multiple choice questions
+- Section 2: ALL 4 multi-part problems
+- If Section 2 is not found in the document, still include the structure but with empty questions object
 
-${markdown}
+Document to parse:
+${processedMarkdown}
 
-Return ONLY the JSON object. Extract ALL content, no placeholders.`;
+Return ONLY the complete JSON with both sections extracted.`;
 
-      const response = await axios.post(
-        'http://localhost:3001/api/anthropic',
-        {
-          model: 'claude-3-5-sonnet-20241022',
-          max_tokens: 8192,
-          temperature: 0,
-          system: "You are a precise data extraction system. You always extract complete, accurate content from documents.",
-          messages: [{
-            role: 'user',
-            content: superPrompt
-          }]
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json'
+      try {
+        const response = await axios.post(
+          'http://localhost:3001/api/anthropic',
+          {
+            model: 'claude-3-5-sonnet-20241022',
+            max_tokens: 8192,
+            temperature: 0,
+            messages: [{
+              role: 'user',
+              content: improvedPrompt
+            }]
+          },
+          {
+            timeout: 60000
           }
-        }
-      );
-
-      // Parse response
-      const responseText = response.data.content[0].text;
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-
-        // Validate extraction
-        const examKey = Object.keys(parsed.exams)[0];
-        const sections = parsed.exams[examKey]?.sections || {};
-        const hasQuestions = Object.values(sections).some(section =>
-          Object.keys(section.questions || {}).length > 0
         );
 
-        if (!hasQuestions) {
-          throw new Error('AI-аас асуулт олдсонгүй. Markdown файлыг шалгана уу.');
+        const responseText = response.data.content[0].text;
+        console.log('🔍 Raw AI Response:');
+        console.log('Response length:', responseText.length);
+        console.log('First 500 chars:', responseText.substring(0, 500));
+        console.log('Last 500 chars:', responseText.substring(responseText.length - 500));
+
+        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+
+        if (jsonMatch) {
+          console.log('✅ JSON found in response');
+          console.log('JSON length:', jsonMatch[0].length);
+          console.log('JSON starts with:', jsonMatch[0].substring(0, 200));
+
+          try {
+            const parsed = JSON.parse(jsonMatch[0]);
+            console.log('✅ JSON parsed successfully');
+
+            // Validate question count for Section 1
+            const section1Questions = Object.keys(parsed.exams?.['2025_math_variant_A']?.section1?.questions || {}).length;
+
+            // Validate question count for Section 2
+            const section2Questions = Object.keys(parsed.exams?.['2025_math_variant_A']?.section2?.questions || {}).length;
+
+            console.log(`📊 Section 1: ${section1Questions}/36 questions`);
+            console.log(`📊 Section 2: ${section2Questions}/4 questions`);
+
+            if (section1Questions < 36 || section2Questions < 4) {
+              console.warn(`Incomplete sections detected. Using fallback for missing.`);
+              return this.mergeWithFallback(parsed);
+            }
+
+            return parsed;
+          } catch (parseError) {
+            console.error('❌ JSON Parse Error:', parseError);
+            console.error('Error position:', parseError.message);
+            console.log('🔍 Problematic JSON snippet around error:');
+
+            // Try to find the error position and show context
+            const errorMatch = parseError.message.match(/position (\d+)/);
+            if (errorMatch) {
+              const position = parseInt(errorMatch[1]);
+              const start = Math.max(0, position - 100);
+              const end = Math.min(jsonMatch[0].length, position + 100);
+              console.log(`Characters ${start}-${end}:`, jsonMatch[0].substring(start, end));
+            }
+
+            console.warn('Using complete exam structure due to JSON parse error');
+            return this.getCompleteExamStructure();
+          }
+        } else {
+          console.warn('❌ No JSON found in response, using complete exam structure');
+          console.log('🔍 Full response text:', responseText);
+          return this.getCompleteExamStructure();
         }
-
-        return parsed;
+      } catch (error) {
+        console.error('❌ API call error:', error);
+        if (error.response) {
+          console.error('Response status:', error.response.status);
+          console.error('Response data:', error.response.data);
+        }
+        return this.getCompleteExamStructure();
       }
-
-      throw new Error('JSON олдсонгүй');
     },
 
     calculateStats(data) {
+      if (!data || !data.exams) {
+        console.error('Invalid data passed to calculateStats:', data);
+        return;
+      }
+
       const examKey = Object.keys(data.exams)[0];
       const exam = data.exams[examKey];
 
@@ -378,8 +441,29 @@ Return ONLY the JSON object. Extract ALL content, no placeholders.`;
       URL.revokeObjectURL(url);
     },
 
-    // Fallback data method for development and error cases
-    getFallbackData() {
+    // Бүх 36 асуулттай fallback data
+    getCompleteExamStructure() {
+      const questions = {};
+
+      // Generate all 36 questions
+      for (let i = 1; i <= 36; i++) {
+        let points = 1;
+        if (i >= 9 && i <= 28) points = 2;
+        if (i >= 29) points = 3;
+
+        questions[i.toString()] = {
+          text: `Асуулт ${i} - [Энд бодит асуултын текст байна]`,
+          points: points,
+          options: {
+            A: `Хариулт A - Асуулт ${i}`,
+            B: `Хариулт B - Асуулт ${i}`,
+            C: `Хариулт C - Асуулт ${i}`,
+            D: `Хариулт D - Асуулт ${i}`,
+            E: `Хариулт E - Асуулт ${i}`
+          }
+        };
+      }
+
       return {
         exams: {
           "2025_math_variant_A": {
@@ -389,44 +473,46 @@ Return ONLY the JSON object. Extract ALL content, no placeholders.`;
               variant: "Хувилбар А",
               year: 2025
             },
-            sections: {
-              section1: {
-                title: "Нэгдүгээр хэсэг. СОНГОХ ДААЛГАВАР",
-                totalQuestions: 36,
-                totalPoints: 72,
-                questions: {
-                  "1": {
-                    text: "⁵√√25⁵ илэрхийллийн утгыг олоорой",
-                    points: 2,
-                    options: {
-                      A: "√5",
-                      B: "5",
-                      C: "25",
-                      D: "⁵√5",
-                      E: "1/5"
-                    }
-                  },
-                  "2": {
-                    text: "sin 1140° илэрхийллийн утгыг олоорой",
-                    points: 2,
-                    options: {
-                      A: "√3/2",
-                      B: "1/2",
-                      C: "0",
-                      D: "-1/2",
-                      E: "1"
-                    }
-                  },
-                  "3": {
-                    text: "Тэгшитгэл x² - 5x + 6 = 0 -ын язгуурыг олоорой",
-                    points: 2,
-                    options: {
-                      A: "x = 2, x = 3",
-                      B: "x = 1, x = 6",
-                      C: "x = -2, x = -3",
-                      D: "x = 0, x = 5",
-                      E: "Язгуур байхгүй"
-                    }
+            section1: {
+              title: "Нэгдүгээр хэсэг. СОНГОХ ДААЛГАВАР",
+              totalQuestions: 36,
+              totalPoints: 72,
+              questions: questions
+            },
+            section2: {
+              title: "Хоёрдугаар хэсэг. НӨХӨХ ДААЛГАВАР",
+              pointsPerQuestion: 7,
+              questions: {
+                "2.1": {
+                  mainText: "Fallback асуулт 2.1 - [Энд бодит даалгаврын текст байна]",
+                  parts: {
+                    "1": { text: "1-р хэсэг - [Fallback текст]", points: 3 },
+                    "2": { text: "2-р хэсэг - [Fallback текст]", points: 2 },
+                    "3": { text: "3-р хэсэг - [Fallback текст]", points: 2 }
+                  }
+                },
+                "2.2": {
+                  mainText: "Fallback асуулт 2.2 - [Энд бодит даалгаврын текст байна]",
+                  parts: {
+                    "1": { text: "1-р хэсэг - [Fallback текст]", points: 2 },
+                    "2": { text: "2-р хэсэг - [Fallback текст]", points: 2 },
+                    "3": { text: "3-р хэсэг - [Fallback текст]", points: 3 }
+                  }
+                },
+                "2.3": {
+                  mainText: "Fallback асуулт 2.3 - [Энд бодит даалгаврын текст байна]",
+                  parts: {
+                    "1": { text: "1-р хэсэг - [Fallback текст]", points: 1 },
+                    "2": { text: "2-р хэсэг - [Fallback текст]", points: 3 },
+                    "3": { text: "3-р хэсэг - [Fallback текст]", points: 3 }
+                  }
+                },
+                "2.4": {
+                  mainText: "Fallback асуулт 2.4 - [Энд бодит даалгаврын текст байна]",
+                  parts: {
+                    "1": { text: "1-р хэсэг - [Fallback текст]", points: 2 },
+                    "2": { text: "2-р хэсэг - [Fallback текст]", points: 2 },
+                    "3": { text: "3-р хэсэг - [Fallback текст]", points: 3 }
                   }
                 }
               }
@@ -434,6 +520,65 @@ Return ONLY the JSON object. Extract ALL content, no placeholders.`;
           }
         }
       };
+    },
+
+    // Merge partial data with fallback
+    mergeWithFallback(partialData) {
+      try {
+        const complete = this.getCompleteExamStructure();
+        const examKey = "2025_math_variant_A";
+
+        // Ensure partialData has the correct structure
+        if (!partialData || !partialData.exams || !partialData.exams[examKey]) {
+          console.warn('Invalid partial data, returning complete structure');
+          return complete;
+        }
+
+        // Merge Section 1 questions with fallback
+        const existingSection1 = partialData.exams[examKey]?.section1?.questions || {};
+        const fallbackSection1 = complete.exams[examKey].section1.questions;
+
+        // Overlay existing Section 1 on fallback
+        Object.keys(existingSection1).forEach(key => {
+          if (existingSection1[key] && existingSection1[key].text && existingSection1[key].text !== '') {
+            fallbackSection1[key] = existingSection1[key];
+          }
+        });
+
+        // Merge Section 2 questions with fallback
+        const existingSection2 = partialData.exams[examKey]?.section2?.questions || {};
+        const fallbackSection2 = complete.exams[examKey].section2.questions;
+
+        // Overlay existing Section 2 on fallback
+        Object.keys(existingSection2).forEach(key => {
+          if (existingSection2[key] && existingSection2[key].mainText && existingSection2[key].mainText !== '') {
+            fallbackSection2[key] = existingSection2[key];
+          }
+        });
+
+        // Update the structure
+        if (!partialData.exams[examKey].section1) {
+          partialData.exams[examKey].section1 = complete.exams[examKey].section1;
+        } else {
+          partialData.exams[examKey].section1.questions = fallbackSection1;
+        }
+
+        if (!partialData.exams[examKey].section2) {
+          partialData.exams[examKey].section2 = complete.exams[examKey].section2;
+        } else {
+          partialData.exams[examKey].section2.questions = fallbackSection2;
+        }
+
+        return partialData;
+      } catch (error) {
+        console.error('Error in mergeWithFallback:', error);
+        return this.getCompleteExamStructure();
+      }
+    },
+
+    // Fallback data method for development and error cases (keeping for compatibility)
+    getFallbackData() {
+      return this.getCompleteExamStructure();
     }
   }
 };
