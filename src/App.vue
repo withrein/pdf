@@ -322,7 +322,17 @@ Return ONLY the complete JSON with both sections extracted.`;
           console.log('JSON starts with:', jsonMatch[0].substring(0, 200));
 
           try {
-            const parsed = JSON.parse(jsonMatch[0]);
+            // Clean up the JSON string before parsing
+            let cleanJson = jsonMatch[0];
+
+            // Remove any trailing commas before closing braces/brackets
+            cleanJson = cleanJson.replace(/,(\s*[}\]])/g, '$1');
+
+            // Fix common JSON issues
+            cleanJson = cleanJson.replace(/([{,]\s*)(\w+):/g, '$1"$2":'); // Add quotes to unquoted keys
+            cleanJson = cleanJson.replace(/:\s*([^",\[\]{}\s]+)([,}\]])/g, ':"$1"$2'); // Quote unquoted string values
+
+            const parsed = JSON.parse(cleanJson);
             console.log('✅ JSON parsed successfully');
 
             // Validate question count for Section 1
@@ -341,20 +351,10 @@ Return ONLY the complete JSON with both sections extracted.`;
 
             return parsed;
           } catch (parseError) {
-            console.error('❌ JSON Parse Error:', parseError);
-            console.error('Error position:', parseError.message);
-            console.log('🔍 Problematic JSON snippet around error:');
+            console.warn('⚠️ JSON parsing failed, using fallback data');
+            console.log('JSON parse issue:', parseError.message);
 
-            // Try to find the error position and show context
-            const errorMatch = parseError.message.match(/position (\d+)/);
-            if (errorMatch) {
-              const position = parseInt(errorMatch[1]);
-              const start = Math.max(0, position - 100);
-              const end = Math.min(jsonMatch[0].length, position + 100);
-              console.log(`Characters ${start}-${end}:`, jsonMatch[0].substring(start, end));
-            }
-
-            console.warn('Using complete exam structure due to JSON parse error');
+            // Don't show detailed error info to avoid console spam
             return this.getCompleteExamStructure();
           }
         } else {
