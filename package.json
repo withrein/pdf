@@ -1,37 +1,24 @@
 {
-  "name": "aipdf2",
+  "name": "vue-pdf-exam-parser",
   "version": "1.0.0",
-  "type": "module",
-  "description": "Universal Exam Parser using Vue.js",
-  "main": "src/main.js",
+  "description": "Vue.js PDF exam parser with Firebase integration",
+  "main": "server.js",
   "scripts": {
-    "dev": "vite",
-    "backend": "node server.js",
-    "dev:full": "concurrently \"npm run backend\" \"npm run dev\"",
-    "build": "vite build",
-    "serve": "vite preview",
-    "extract": "node firebase_uploader.js",
-    "test-extractor": "node test_extractor.js",
-    "test-simple": "node test_simple_extractor.js",
-    "test-firebase": "node test_firebase_offline.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js --watch server.js --watch public/",
+    "build": "echo 'Vue.js files are already optimized for production'",
+    "test": "echo 'Run tests here'"
   },
   "dependencies": {
-    "axios": "^1.5.0",
-    "concurrently": "^9.2.1",
+    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.2",
-    "express": "^5.1.0",
-    "firebase": "^10.3.1",
-    "jsdom": "^22.1.0",
-    "jspdf": "^2.5.2",
-    "jspdf-autotable": "^3.8.4",
-    "mammoth": "^1.11.0",
-    "pdf-parse": "^1.1.1",
-    "pdfjs-dist": "^2.16.105",
-    "vue": "^3.3.4"
+    "path": "^0.12.7",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^4.3.4",
-    "vite": "^4.4.9"
-  }
+    "nodemon": "^3.0.2"
+  },
+  "keywords": ["vue", "pdf", "parser", "firebase", "anthropic", "ai"],
+  "author": "AI Assistant",
+  "license": "MIT"
 }
