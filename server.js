@@ -1,14 +1,36 @@
-// Load environment variables from .env file
+// Clean MathPix-enabled PDF to Q&A Server
 require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const multer = require('multer');
 const { db } = require('./firebase-config');
-const { collection, addDoc, getDocs, doc, updateDoc, deleteDoc } = require('firebase/firestore');
+const { collection, addDoc, getDocs, doc, getDoc } = require('firebase/firestore');
+
+// Import our clean services
+const mathpixService = require('./services/mathpixService');
+const anthropicService = require('./services/anthropicService');
+const AIOnlyExtractor = require('./services/aiOnlyExtractor');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Configure multer for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed'), false);
+    }
+  }
+});
 
 // Middleware
 app.use(cors({
@@ -23,264 +45,56 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static files from public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Anthropic API Key from environment
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+// Serve Vue components from src directory
+app.use('/src', express.static(path.join(__dirname, 'src')));
 
-// Check if API key is loaded
-if (!ANTHROPIC_API_KEY) {
-  console.error('⚠️  АНХААРУУЛГА: ANTHROPIC_API_KEY байхгүй байна!');
-  console.error('   .env файлд API key-г оруулна уу');
-  console.error('   API key авах газар: https://console.anthropic.com/');
-} else {
-  const maskedKey = ANTHROPIC_API_KEY.substring(0, 8) + '...' + ANTHROPIC_API_KEY.substring(ANTHROPIC_API_KEY.length - 4);
-  console.log('✅ ANTHROPIC_API_KEY ачаалагдлаа:', maskedKey);
-}
+// API Status and Health Check
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    message: 'Clean PDF to Q&A Server ажиллаж байна',
+    services: {
+      mathpix: !!process.env.MATHPIX_APP_ID && !!process.env.MATHPIX_APP_KEY,
+      anthropic: !!process.env.ANTHROPIC_API_KEY,
+      firebase: !!process.env.FIREBASE_PROJECT_ID
+    }
+  });
+});
 
-// Count questions in PDF function
-async function countQuestionsInPDF(pdfText) {
+// Get service status
+app.get('/api/status', async (req, res) => {
   try {
-    const fetch = (await import('node-fetch')).default;
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 1000,
-        messages: [{
-          role: 'user',
-          content: `Count the total number of questions in this Mongolian exam PDF text.
-
-PDF Text:
-${pdfText}
-
-Please respond with ONLY the counts in this format:
-Section 1: [number] questions
-Section 2: [number] questions
-Total: [number] questions
-
-Count every single question carefully, don't miss any.`
-        }]
-      })
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const countText = data.content[0].text;
-      console.log('📊 Асуулт тоолсон хариулт:', countText);
-
-      // Extract numbers from response
-      const section1Match = countText.match(/Section 1[:\s]*(\d+)/i);
-      const section2Match = countText.match(/Section 2[:\s]*(\d+)/i);
-      const totalMatch = countText.match(/Total[:\s]*(\d+)/i);
-
-      return {
-        section1: section1Match ? parseInt(section1Match[1]) : 0,
-        section2: section2Match ? parseInt(section2Match[1]) : 0,
-        total: totalMatch ? parseInt(totalMatch[1]) : 0
-      };
-    }
-  } catch (error) {
-    console.error('Асуулт тоолохад алдаа:', error);
-  }
-
-  return { section1: 0, section2: 0, total: 0 };
-}
-
-// Split text into chunks for processing
-function splitTextIntoChunks(text, maxChunkSize = 3000) {
-  const chunks = [];
-  const lines = text.split('\n');
-  let currentChunk = '';
-
-  for (const line of lines) {
-    if (currentChunk.length + line.length > maxChunkSize && currentChunk.length > 0) {
-      chunks.push(currentChunk.trim());
-      currentChunk = line;
-    } else {
-      currentChunk += '\n' + line;
-    }
-  }
-
-  if (currentChunk.trim()) {
-    chunks.push(currentChunk.trim());
-  }
-
-  return chunks;
-}
-
-// Parse questions with chunked approach
-async function parseQuestionsWithRetry(pdfText, expectedCount) {
-  const fetch = (await import('node-fetch')).default;
-
-  console.log('📄 PDF текст хэмжээ:', pdfText.length, 'тэмдэгт');
-
-  // Split text into manageable chunks
-  const chunks = splitTextIntoChunks(pdfText, 3000);
-  console.log('📂 Текстийг', chunks.length, 'хэсэгт хуваалаа');
-
-  let allSection1 = [];
-  let allSection2 = [];
-  let section1IdCounter = 1;
-  let section2IdCounter = 1;
-
-  for (let i = 0; i < chunks.length; i++) {
-    console.log(`🔄 ${i + 1}/${chunks.length} хэсгийг боловсруулж байна...`);
-
-    try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
-          model: 'claude-3-5-sonnet-20241022',
-          max_tokens: 4000,
-          messages: [{
-            role: 'user',
-            content: `Extract ALL questions from this chunk of Mongolian exam text. Return JSON format.
-
-Text chunk ${i + 1}/${chunks.length}:
-${chunks[i]}
-
-Extract ALL questions in this format:
-{
-  "section1": [
-    {
-      "question": "complete question text",
-      "options": ["A option", "B option", "C option", "D option", "E option"],
-      "optionLabels": ["A", "B", "C", "D", "E"],
-      "points": 1,
-      "type": "multiple_choice"
-    }
-  ],
-  "section2": [
-    {
-      "question": "complete question text",
-      "parts": [
-        {
-          "part": 1,
-          "description": "part description",
-          "answer": "answer template",
-          "points": 3
-        }
-      ],
-      "points": 7,
-      "type": "fill_in_blank"
-    }
-  ]
-}
-
-RULES:
-1. Extract EVERY question in this chunk
-2. Section 1 = Multiple choice (A,B,C,D,E)
-3. Section 2 = Fill-in-the-blank
-4. Don't assign ID numbers - I'll add them later
-5. Preserve mathematical formulas exactly
-6. Return only valid JSON
-7. If no questions in chunk, return {"section1":[], "section2":[]}`
-          }]
-        })
-      });
-
-      if (!response.ok) {
-        console.log(`❌ API алдаа chunk ${i + 1}:`, response.status);
-        continue;
-      }
-
-      const data = await response.json();
-      const aiResponse = data.content[0].text;
-
-      // Extract JSON
-      let jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        const codeBlockMatch = aiResponse.match(/```json\s*([\s\S]*?)\s*```/);
-        if (codeBlockMatch) {
-          jsonMatch = [codeBlockMatch[1]];
-        }
-      }
-
-      if (jsonMatch) {
-        const chunkData = JSON.parse(jsonMatch[0]);
-
-        // Add questions with proper IDs
-        if (chunkData.section1 && chunkData.section1.length > 0) {
-          chunkData.section1.forEach(q => {
-            q.id = section1IdCounter++;
-            allSection1.push(q);
-          });
-        }
-
-        if (chunkData.section2 && chunkData.section2.length > 0) {
-          chunkData.section2.forEach(q => {
-            q.id = section2IdCounter++;
-            allSection2.push(q);
-          });
-        }
-
-        console.log(`✅ Chunk ${i + 1}: Section1=${chunkData.section1?.length || 0}, Section2=${chunkData.section2?.length || 0}`);
-      } else {
-        console.log(`❌ Chunk ${i + 1}: JSON олдсонгүй`);
-      }
-
-    } catch (error) {
-      console.error(`❌ Chunk ${i + 1} алдаа:`, error.message);
-    }
-
-    // Small delay between requests
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  }
-
-  const finalResult = {
-    section1: allSection1,
-    section2: allSection2
-  };
-
-  const foundTotal = allSection1.length + allSection2.length;
-  console.log(`🎯 Нийт олдсон асуулт: Section1=${allSection1.length}, Section2=${allSection2.length}, Total=${foundTotal}`);
-  console.log(`📋 Хүлээгдэж буй: Section1=${expectedCount.section1}, Section2=${expectedCount.section2}, Total=${expectedCount.total}`);
-
-  if (foundTotal >= expectedCount.total * 0.8) { // 80% threshold for chunked approach
-    console.log('✅ Хангалттай асуулт олдлоо!');
-    return finalResult;
-  } else {
-    console.log('⚠️ Хангалтгүй асуулт олдлоо, гэхдээ олдсон асуултуудыг буцаана...');
-    return finalResult; // Return what we found
-  }
-}
-
-// Firebase API Routes
-app.post('/api/save-questions', async (req, res) => {
-  try {
-    const { questions, metadata } = req.body;
-
-    const docData = {
-      questions: questions,
-      metadata: metadata || {
-        timestamp: new Date().toISOString(),
-        totalQuestions: (questions.section1?.length || 0) + (questions.section2?.length || 0)
-      },
-      createdAt: new Date()
+    const status = {
+      server: 'running',
+      timestamp: new Date().toISOString(),
+      services: {}
     };
 
-    const docRef = await addDoc(collection(db, 'pdf-questions'), docData);
+    // Check MathPix service
+    try {
+      if (process.env.MATHPIX_APP_ID && process.env.MATHPIX_APP_KEY) {
+        const accountInfo = await mathpixService.getAccountInfo();
+        status.services.mathpix = {
+          status: 'connected',
+          quota: accountInfo.total_requests || 'N/A',
+          remaining: accountInfo.monthly_limit_remaining || 'N/A'
+        };
+      } else {
+        status.services.mathpix = { status: 'not_configured' };
+      }
+    } catch (error) {
+      status.services.mathpix = { status: 'error', error: error.message };
+    }
 
-    console.log('💾 Firebase-д хадгаллаа:', docRef.id);
+    // Check AI service
+    status.services.anthropic = process.env.ANTHROPIC_API_KEY ? 'configured' : 'not_configured';
 
-    res.json({
-      success: true,
-      docId: docRef.id,
-      message: 'Асуултууд Firebase-д амжилттай хадгалагдлаа'
-    });
+    // Check Firebase
+    status.services.firebase = process.env.FIREBASE_PROJECT_ID ? 'configured' : 'not_configured';
 
+    res.json(status);
   } catch (error) {
-    console.error('❌ Firebase хадгалах алдаа:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -288,19 +102,206 @@ app.post('/api/save-questions', async (req, res) => {
   }
 });
 
-app.get('/api/get-questions', async (req, res) => {
-  try {
-    const querySnapshot = await getDocs(collection(db, 'pdf-questions'));
-    const documents = [];
+// Initialize AI-Only Extractor
+const aiExtractor = new AIOnlyExtractor();
 
-    querySnapshot.forEach((doc) => {
-      documents.push({
-        id: doc.id,
-        ...doc.data()
+// NEW: 100% AI-powered PDF processing endpoint
+app.post('/api/process-with-ai-complete', upload.single('pdf'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'PDF файл дутуу байна'
       });
+    }
+
+    console.log('🤖 100% AI processing эхэллээ:', req.file.originalname);
+
+    // Step 1: PDF → Markdown (Mathpix)
+    const markdown = await mathpixService.convertPdfToMarkdown(req.file.buffer);
+
+    if (!markdown.success) {
+      throw new Error('MathPix conversion failed');
+    }
+
+    // Step 2: AI extracts everything
+    const aiResult = await aiExtractor.extractEverything(markdown.markdown);
+
+    // Step 3: Save directly to Firebase
+    const docData = {
+      originalFile: req.file.originalname,
+      originalMarkdown: markdown.markdown,
+      questions: aiResult.content,
+      metadata: aiResult.metadata,
+      processedBy: 'AI-Complete',
+      timestamp: new Date(),
+      version: 'ai-complete-v1'
+    };
+
+    const docRef = await addDoc(collection(db, 'pdf-questions-ai-complete'), docData);
+
+    console.log('✅ AI Complete processing success:', docRef.id);
+
+    res.json({
+      success: true,
+      docId: docRef.id,
+      message: '100% AI processing амжилттай',
+      data: aiResult,
+      stats: {
+        totalQuestions: aiResult.metadata.totalQuestions,
+        sections: aiResult.content.sections.length,
+        confidence: aiResult.metadata.extractionConfidence
+      }
     });
 
-    console.log('📖 Firebase-ээс уншлаа:', documents.length, 'баримт бичиг');
+  } catch (error) {
+    console.error('❌ AI Complete processing error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// MAIN ENDPOINT: AI-powered PDF to Questions conversion
+app.post('/api/convert-pdf-ai-enhanced', upload.single('pdf'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'PDF файл дутуу байна'
+      });
+    }
+
+    console.log('📄 AI Enhanced PDF conversion эхэллээ:', req.file.originalname, 'Хэмжээ:', req.file.size);
+
+    // Step 1: Convert PDF to Markdown using MathPix
+    console.log('🔄 MathPix conversion...');
+    const mathpixResult = await mathpixService.convertPdfToMarkdown(req.file.buffer);
+
+    if (!mathpixResult.success) {
+      throw new Error('MathPix conversion амжилтгүй боллоо');
+    }
+
+    console.log('✅ MathPix conversion дууслаа');
+
+    // Step 2: Process with AI for intelligent question extraction and image association
+    console.log('🤖 AI enhanced processing...');
+    const aiResult = await anthropicService.enhanceQuestionExtraction(mathpixResult.markdown);
+
+    let finalQuestions;
+    let processingMethod;
+
+    if (aiResult.success) {
+      console.log('✅ AI processing амжилттай боллоо');
+      finalQuestions = aiResult.questions;
+      processingMethod = 'ai_enhanced';
+    } else {
+      console.log('⚠️ AI processing алдаа, basic structure ашиглаж байна...');
+      // Simple fallback structure
+      finalQuestions = {
+        section1: [],
+        section2: []
+      };
+      processingMethod = 'basic_fallback';
+    }
+
+    // Step 3: Save to Firebase with enhanced metadata and original markdown
+    const docData = {
+      questions: finalQuestions,
+      originalMarkdown: mathpixResult.markdown, // MathPix original markdown хадгалах
+      metadata: {
+        originalFileName: req.file.originalname,
+        fileSize: req.file.size,
+        mathpix: mathpixResult.metadata,
+        aiProcessing: aiResult.success ? aiResult.metadata : null,
+        processingMethod: processingMethod,
+        section1Count: finalQuestions.section1?.length || 0,
+        section2Count: finalQuestions.section2?.length || 0,
+        totalQuestions: (finalQuestions.section1?.length || 0) + (finalQuestions.section2?.length || 0),
+        markdownLength: mathpixResult.markdown.length,
+        processedAt: new Date().toISOString()
+      },
+      createdAt: new Date(),
+      version: 'clean-ai-v1'
+    };
+
+    const docRef = await addDoc(collection(db, 'pdf-questions-ai'), docData);
+
+    console.log('💾 AI Enhanced questions Firebase-д хадгалагдлаа:', docRef.id);
+
+    // Prepare response
+    const response = {
+      success: true,
+      docId: docRef.id,
+      message: `Clean AI PDF processing амжилттай боллоо (${processingMethod})`,
+      data: {
+        questions: finalQuestions,
+        markdown: mathpixResult.markdown
+      },
+      stats: {
+        section1: finalQuestions.section1?.length || 0,
+        section2: finalQuestions.section2?.length || 0,
+        total: (finalQuestions.section1?.length || 0) + (finalQuestions.section2?.length || 0),
+        processingMethod: processingMethod,
+        aiProcessed: aiResult.success
+      },
+      metadata: docData.metadata
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('❌ AI Enhanced PDF conversion алдаа:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'AI Enhanced PDF conversion алдаа гарлаа'
+    });
+  }
+});
+
+// Get questions from Firebase (check all collections)
+app.get('/api/get-questions', async (req, res) => {
+  try {
+    let documents = [];
+
+    // Try AI Complete collection first
+    try {
+      const aiCompleteSnapshot = await getDocs(collection(db, 'pdf-questions-ai-complete'));
+      aiCompleteSnapshot.forEach((doc) => {
+        documents.push({
+          id: doc.id,
+          source: 'ai-complete',
+          ...doc.data()
+        });
+      });
+    } catch (error) {
+      console.log('No AI Complete collection yet');
+    }
+
+    // Try AI enhanced collection
+    try {
+      const aiQuerySnapshot = await getDocs(collection(db, 'pdf-questions-ai'));
+      aiQuerySnapshot.forEach((doc) => {
+        documents.push({
+          id: doc.id,
+          source: 'ai-enhanced',
+          ...doc.data()
+        });
+      });
+    } catch (error) {
+      console.log('No AI enhanced collection yet');
+    }
+
+    // Sort by creation date (newest first)
+    documents.sort((a, b) => {
+      const aDate = a.timestamp || a.createdAt;
+      const bDate = b.timestamp || b.createdAt;
+      return new Date(bDate) - new Date(aDate);
+    });
+
+    console.log('📖 Questions Firebase-ээс уншлаа:', documents.length, 'баримт');
 
     res.json({
       success: true,
@@ -308,7 +309,7 @@ app.get('/api/get-questions', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Firebase унших алдаа:', error);
+    console.error('❌ Questions унших алдаа:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -316,73 +317,63 @@ app.get('/api/get-questions', async (req, res) => {
   }
 });
 
-// API Routes
-app.post('/api/parse-pdf', async (req, res) => {
-  try {
-    const { pdfText } = req.body;
-
-    if (!pdfText) {
-      return res.status(400).json({
-        success: false,
-        error: 'PDF текст дутуу байна'
-      });
-    }
-
-    console.log('📄 PDF текст хүлээн авлаа:', pdfText.length, 'тэмдэгт');
-    console.log('📊 PDF агуулгын эхний 500 тэмдэгт:', pdfText.substring(0, 500));
-
-    // Count questions first
-    const questionCount = await countQuestionsInPDF(pdfText);
-    console.log('📋 PDF дэх нийт асуултын тоо:', questionCount);
-
-    // Parse with retries until all questions are found
-    const allQuestions = await parseQuestionsWithRetry(pdfText, questionCount);
-
-    res.json({
-      success: true,
-      data: allQuestions
-    });
-
-
-  } catch (error) {
-    console.error('❌ Parse алдаа:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    message: 'Сервер зөв ажиллаж байна'
-  });
-});
-
-// Serve Vue.js app for all other routes
-app.get('*', (req, res) => {
+// Main route: Serve the Vue.js app
+app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Error handling middleware
+// PDF Question Viewer route
+app.get('/pdf.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'pdf.html'));
+});
+
+// Questions Viewer route
+app.get('/view-questions.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'view-questions.html'));
+});
+
+// 404 for all other routes
+app.get('*', (req, res) => {
+  res.status(404).json({
+    error: 'Route not found',
+    message: 'This is a clean API server. Available endpoints listed at /',
+    available: ['/api/health', '/api/status', '/api/convert-pdf-ai-enhanced', '/api/get-questions']
+  });
+});
+
+// Enhanced error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Server алдаа:', err.stack);
+  console.error('Server алдаа:', err);
+
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        error: 'Файлын хэмжээ хэт том байна (максимум 50MB)'
+      });
+    }
+  }
+
   res.status(500).json({
     success: false,
-    error: 'Сервер дотоод алдаа гарлаа'
+    error: 'Server дотоод алдаа гарлаа',
+    details: err.message
   });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Vue.js PDF Parser сервер ажиллаж байна: http://localhost:${PORT}`);
-  console.log(`📄 PDF Parser: http://localhost:${PORT}`);
-  console.log(`🔧 API Health: http://localhost:${PORT}/api/health`);
-  console.log(`🔧 API Parse: http://localhost:${PORT}/api/parse-pdf`);
-  console.log(`💾 API Save Questions: http://localhost:${PORT}/api/save-questions`);
-  console.log(`📖 API Get Questions: http://localhost:${PORT}/api/get-questions`);
+  console.log(`\n🚀 Clean PDF to Q&A API Server started:`);
+  console.log(`📍 URL: http://localhost:${PORT}`);
+  console.log(`🔧 Health Check: http://localhost:${PORT}/api/health`);
+  console.log(`📊 Status: http://localhost:${PORT}/api/status`);
+  console.log(`\n📚 Available Endpoints:`);
+  console.log(`   POST /api/process-with-ai-complete - 100% AI-powered PDF Processing`);
+  console.log(`   POST /api/convert-pdf-ai-enhanced - AI-powered PDF to Questions`);
+  console.log(`   GET /api/get-questions - Get Saved Questions`);
+  console.log(`\n🔑 Service Status:`);
+  console.log(`   MathPix: ${process.env.MATHPIX_APP_ID ? '✅ Configured' : '❌ Not configured'}`);
+  console.log(`   Anthropic AI: ${process.env.ANTHROPIC_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
+  console.log(`   Firebase: ${process.env.FIREBASE_PROJECT_ID ? '✅ Configured' : '❌ Not configured'}`);
 });
 
 module.exports = app;
