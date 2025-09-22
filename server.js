@@ -1,6 +1,11 @@
+// Load environment variables from .env file
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const { db } = require('./firebase-config');
+const { collection, addDoc, getDocs, doc, updateDoc, deleteDoc } = require('firebase/firestore');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -20,6 +25,16 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Anthropic API Key from environment
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// Check if API key is loaded
+if (!ANTHROPIC_API_KEY) {
+  console.error('⚠️  АНХААРУУЛГА: ANTHROPIC_API_KEY байхгүй байна!');
+  console.error('   .env файлд API key-г оруулна уу');
+  console.error('   API key авах газар: https://console.anthropic.com/');
+} else {
+  const maskedKey = ANTHROPIC_API_KEY.substring(0, 8) + '...' + ANTHROPIC_API_KEY.substring(ANTHROPIC_API_KEY.length - 4);
+  console.log('✅ ANTHROPIC_API_KEY ачаалагдлаа:', maskedKey);
+}
 
 // Count questions in PDF function
 async function countQuestionsInPDF(pdfText) {
@@ -240,6 +255,67 @@ RULES:
   }
 }
 
+// Firebase API Routes
+app.post('/api/save-questions', async (req, res) => {
+  try {
+    const { questions, metadata } = req.body;
+
+    const docData = {
+      questions: questions,
+      metadata: metadata || {
+        timestamp: new Date().toISOString(),
+        totalQuestions: (questions.section1?.length || 0) + (questions.section2?.length || 0)
+      },
+      createdAt: new Date()
+    };
+
+    const docRef = await addDoc(collection(db, 'pdf-questions'), docData);
+
+    console.log('💾 Firebase-д хадгаллаа:', docRef.id);
+
+    res.json({
+      success: true,
+      docId: docRef.id,
+      message: 'Асуултууд Firebase-д амжилттай хадгалагдлаа'
+    });
+
+  } catch (error) {
+    console.error('❌ Firebase хадгалах алдаа:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.get('/api/get-questions', async (req, res) => {
+  try {
+    const querySnapshot = await getDocs(collection(db, 'pdf-questions'));
+    const documents = [];
+
+    querySnapshot.forEach((doc) => {
+      documents.push({
+        id: doc.id,
+        ...doc.data()
+      });
+    });
+
+    console.log('📖 Firebase-ээс уншлаа:', documents.length, 'баримт бичиг');
+
+    res.json({
+      success: true,
+      data: documents
+    });
+
+  } catch (error) {
+    console.error('❌ Firebase унших алдаа:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // API Routes
 app.post('/api/parse-pdf', async (req, res) => {
   try {
@@ -305,6 +381,8 @@ app.listen(PORT, () => {
   console.log(`📄 PDF Parser: http://localhost:${PORT}`);
   console.log(`🔧 API Health: http://localhost:${PORT}/api/health`);
   console.log(`🔧 API Parse: http://localhost:${PORT}/api/parse-pdf`);
+  console.log(`💾 API Save Questions: http://localhost:${PORT}/api/save-questions`);
+  console.log(`📖 API Get Questions: http://localhost:${PORT}/api/get-questions`);
 });
 
 module.exports = app;

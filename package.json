@@ -10,15 +10,24 @@
     "test": "echo 'Run tests here'"
   },
   "dependencies": {
-    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "path": "^0.12.7",
-    "node-fetch": "^3.3.2"
+    "dotenv": "^17.2.2",
+    "express": "^4.18.2",
+    "firebase": "^12.3.0",
+    "node-fetch": "^3.3.2",
+    "path": "^0.12.7"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
   },
-  "keywords": ["vue", "pdf", "parser", "firebase", "anthropic", "ai"],
+  "keywords": [
+    "vue",
+    "pdf",
+    "parser",
+    "firebase",
+    "anthropic",
+    "ai"
+  ],
   "author": "AI Assistant",
   "license": "MIT"
 }
